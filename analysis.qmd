@@ -1,0 +1,134 @@
+---
+title: "Crypto Markets"
+author: "Kiara Hill"
+execute:
+  echo: false
+---
+
+```{r}
+#| message: false
+library(tidyverse)
+library(arrow)
+```
+
+## Bitcoin Daily Price
+
+```{r}
+prices <- read_parquet("data/daily_prices.parquet") |>
+  mutate(date = as.Date(date_raw))
+
+bitcoin <- prices |>
+  filter(
+    coin_id == "btc",
+    date >= as.Date("2018-01-01"),
+    date <= as.Date("2025-12-31")
+  )
+
+ggplot(bitcoin, aes(x = date, y = price_usd)) +
+  geom_line(color = "#2C7FB8", linewidth = 0.6) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::label_dollar()) +
+  labs(
+    title = "Bitcoin Daily Price",
+    x = "Date",
+    y = "Price (USD)"
+  ) +
+  theme_minimal()
+```
+
+## Crypto Market Share by Category
+
+```{r}
+metadata <- read_parquet("data/coin_metadata.parquet")
+categories <- read_parquet("data/categories.parquet")
+
+crypto <- prices |>
+  left_join(metadata, by = "coin_id") |>
+  left_join(categories, by = "category_id") |>
+  mutate(
+    category = case_when(
+      category_id == "bitcoin" ~ "Payment",
+      category_id == "smart-contract-platform" ~ "Smart Contract Platform",
+      category_id == "stablecoin" ~ "Stablecoin",
+      category_id == "defi" ~ "DeFi",
+      category_id == "exchange-token" ~ "Exchange",
+      category_id == "meme-coin" ~ "Other",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+The provided metadata uses **Bitcoin**, **Exchange Token**, and **Meme Coin** for three
+groups; these are displayed as **Payment**, **Exchange**, and **Other** here to match
+the requested chart labels.
+
+```{r}
+market_share <- crypto |>
+  filter(date <= as.Date("2025-12-31")) |>
+  group_by(date, category) |>
+  summarise(market_cap_usd = sum(market_cap_usd, na.rm = TRUE), .groups = "drop") |>
+  group_by(date) |>
+  mutate(share = market_cap_usd / sum(market_cap_usd)) |>
+  ungroup() |>
+  mutate(
+    category = factor(
+      category,
+      levels = c(
+        "Payment",
+        "Smart Contract Platform",
+        "Stablecoin",
+        "DeFi",
+        "Exchange",
+        "Other"
+      )
+    )
+  )
+
+stopifnot(
+  nrow(crypto) == nrow(prices),
+  !anyNA(crypto$category),
+  all(abs(market_share |> summarise(total = sum(share), .by = date) |> pull(total) - 1) < 1e-8)
+)
+
+ggplot(market_share, aes(x = date, y = share, fill = category)) +
+  geom_area() +
+  geom_rect(
+    data = tibble(
+      xmin = as.Date(c("2022-05-07", "2022-11-08")),
+      xmax = as.Date(c("2022-05-13", "2022-11-12")),
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+    inherit.aes = FALSE,
+    fill = "grey20",
+    alpha = 0.12
+  ) +
+  geom_label(
+    data = tibble(
+      date = as.Date(c("2022-05-09", "2022-11-10")),
+      label = c("Luna / UST crash", "FTX collapse")
+    ),
+    aes(x = date, y = 1.04, label = label),
+    inherit.aes = FALSE,
+    size = 3,
+    label.size = 0.2
+  ) +
+  scale_fill_viridis_d(option = "C", end = 0.9, drop = FALSE) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(
+    labels = scales::label_percent(),
+    limits = c(0, 1.09),
+    breaks = seq(0, 1, by = 0.2)
+  ) +
+  labs(
+    title = "Crypto Market Share by Category",
+    subtitle = "Share of the combined market capitalization of the covered coins, 2018–2025",
+    x = "Date",
+    y = "Share of market capitalization",
+    fill = "Category",
+    caption = "Source: provided daily_prices.parquet, coin_metadata.parquet, and categories.parquet datasets."
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
